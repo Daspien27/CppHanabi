@@ -3,6 +3,11 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+## Visual Studio 2019 CMake Files
+out/
+CMakeSettings.json
+
+
 # User-specific files
 *.rsuser
 *.suo
