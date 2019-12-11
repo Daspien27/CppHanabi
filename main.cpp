@@ -143,7 +143,12 @@ namespace hanabi
 
 			return std::apply([&]<typename... Ranks> (const possibility<Ranks>&... ranks)
 			{
-				return (!ranks.possibile_ && std::holds_alternative<Ranks>(this_card.rank_) || ...);
+			    const auto idx = this_card.rank_.index ();
+			    decltype(idx) j = 0;
+
+			    [[maybe_unused]] bool consume = ((j+=1, ranks.v_) && ...);
+
+			    return idx+1==j;
 			}, played_ranks_this_color);
 		}
 
