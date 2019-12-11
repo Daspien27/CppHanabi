@@ -146,9 +146,9 @@ namespace hanabi
 			    const auto idx = this_card.rank_.index ();
 			    decltype(idx) j = 0;
 
-			    [[maybe_unused]] bool consume = ((j+=1, ranks.v_) && ...);
+			    const bool consume = ((j+=1, ranks.v_) && ...);
 
-			    return idx+1==j;
+			    return idx+1==j && !consume;
 			}, played_ranks_this_color);
 		}
 
