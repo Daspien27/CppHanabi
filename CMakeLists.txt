@@ -4,4 +4,4 @@ project("CppHanabi")
 
 add_executable(CppHanabi "main.cpp")
 
-target_compile_features(CppHanabi PUBLIC cxx_std_17)
+target_compile_features(CppHanabi PUBLIC cxx_std_20)

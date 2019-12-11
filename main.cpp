@@ -125,10 +125,26 @@ namespace hanabi
 		template <typename Configuration>
 		constexpr bool is_playable(const game_state<Configuration>& source) const
 		{
-			const auto this_color = source.deck_.cards_[card_].card_.color_;
+			const auto& this_card = source.deck_.cards_[card_].card_;
+			const auto& this_color = this_card.color_;
 			Configuration::ranks<possibility_tuple> played_ranks_this_color;
 
+			for (const auto& card_in_deck : source.deck_.cards_)
+			{
+				if (card_in_deck.card_.color_.index() == this_color.index())
+				{
+					std::visit([&](const auto& card_rank)
+						{
+							std::get<possibility<std::remove_cv_t<
+													std::remove_reference_t<decltype(card_rank)>>>>(played_ranks_this_color).possibile_ = true;
+						}, card_in_deck.card_.rank_);
+				}
+			}
 
+			return std::apply([&]<typename... Ranks> (const possibility<Ranks>&... ranks)
+			{
+				return (!ranks.possibile_ && std::holds_alternative<Ranks>(this_card.rank_) || ...);
+			}, played_ranks_this_color);
 		}
 
 		template <typename Configuration>
@@ -166,9 +182,13 @@ namespace hanabi
 				}
 
 				target.deck_.cards_[target.next_card_to_draw.value()].location_ = location::hand{ target.player_turn_ };
+
+				++target.next_card_to_draw.value();
+				if (target.next_card_to_draw.value() >= target.deck_.cards_.size()) target.next_card_to_draw = std::nullopt;
 			}
 		}
 	};
+
 	template <typename Property> struct hint { int player_; };
 	struct discard { int card_; };
 
