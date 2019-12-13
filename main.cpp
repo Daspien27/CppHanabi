@@ -1,3 +1,5 @@
+#define NOMINMAX
+
 #include <random>
 #include <variant>
 #include <array>
@@ -767,18 +769,21 @@ namespace hanabi
 
 		}
 		template <typename Gen>
-		void run(Gen& gen) //rng for seeding
+		void run(Gen& gen, bool display) //rng for seeding
 		{
-			std::cout << "start: \n";
-			display_hand_of(game_states_.back().first, 0);
-			display_hand_of(game_states_.back().first, 1);
-			std::cout << "\n\n";
+			if (display)
+			{
+				std::cout << "start: \n";
+				display_hand_of(game_states_.back().first, 0);
+				display_hand_of(game_states_.back().first, 1);
+				std::cout << "\n\n";
+			}
 
 			while (!game_is_over(game_states_.back().first))
 			{
 				const auto& state = game_states_.back().first;
 
-				display_state(state);
+				if (display) display_state(state);
 
 				auto possible_actions = find_all_possible_actions(state);
 
@@ -786,7 +791,7 @@ namespace hanabi
 
 				std::visit([&](const auto& action)
 					{
-						action.display_action(std::cout, state);
+						if (display) action.display_action(std::cout, state);
 						game_states_.emplace_back(action.perform(state), action);
 					}, possible_actions[dis(gen)]);
 
@@ -827,17 +832,30 @@ int main()
 	
 	std::random_device rd;
 
-	std::optional<std::random_device::result_type> default_seed;//
+	std::optional<std::random_device::result_type> default_seed = 3517219547; //15 point game
 
 	std::random_device::result_type seed;
+	auto best_score_so_far = 0;
 
-	seed = default_seed.value_or(rd());
-	std::mt19937 gen(seed);
+	while (best_score_so_far < 15)
+	{
+		seed = default_seed.value_or(rd());
+		std::mt19937 gen(seed);
 
+		hanabi_game game;
+
+		game.init(gen);
+		game.run(gen, false);
+
+		best_score_so_far = std::max(game.final_score().value_or(0), best_score_so_far);
+		std::cout << "score: " << game.final_score().value() << '\n';
+	}
+
+	std::mt19937 best_gen(seed);
 	hanabi_game game;
 
-	game.init(gen);
-	game.run(gen);
-
-	std::cout << "score: " << game.final_score().value() << '\n';
+	game.init(best_gen);
+	game.run(best_gen, true);
+	std::cout << "best score: " << game.final_score().value() << '\n';
+	std::cout << "best seed: " << seed << '\n';
 }
