@@ -24,6 +24,7 @@ namespace hanabi
 		case 2: return "3"sv;
 		case 3: return "4"sv;
 		case 4: return "5"sv;
+		default: throw std::runtime_error("Unexpected rank.");
 		}
 	}
 
@@ -45,6 +46,7 @@ namespace hanabi
 		case 2: return termcolor::yellow;
 		case 3: return termcolor::cyan;
 		case 4: return termcolor::white;
+		default: throw std::runtime_error("Unexpected color.");
 		}
 	}
 
@@ -57,6 +59,7 @@ namespace hanabi
 		case 2: return termcolor::on_yellow;
 		case 3: return termcolor::on_cyan;
 		case 4: return termcolor::on_white;
+		default: throw std::runtime_error("Unexpected color.");
 		}
 	}
 
@@ -70,12 +73,13 @@ namespace hanabi
 		case 2: return "yellow"sv;
 		case 3: return "cyan"sv;
 		case 4: return "white"sv;
+		default: throw std::runtime_error("Unexpected color.");
 		}
 	}
 
 
-	template <size_t N> struct 
-	color 
+	template <size_t N> 
+	struct color 
 	{
 		constexpr static auto display_name()
 		{
@@ -126,6 +130,38 @@ namespace hanabi
 
 	namespace configuration
 	{
+		template <typename Configuration>
+		struct configuration_traits
+		{
+			static constexpr size_t num_players = Configuration::num_players;
+			static constexpr size_t hand_size = Configuration::hand_size;
+			static constexpr int max_num_hints = Configuration::max_num_hints;
+			static constexpr int starting_num_hints = Configuration::starting_num_hints;
+			static constexpr int max_num_mistakes = Configuration::max_num_mistakes;
+
+			template <template <typename... TArgs> typename Container>
+			using ranks = typename Configuration::template ranks<Container>;
+
+			template <template <typename... TArgs> typename Container>
+			using colors = typename Configuration::template colors<Container>;
+
+			template <template <typename... TArgs> typename Container>
+			using locations = typename Configuration::template locations<Container>;
+
+			template <template <typename... TArgs> typename Container>
+			using actions = typename Configuration::template actions<Container>;
+
+			using card_frequencies = typename Configuration::card_frequencies;
+
+			static constexpr size_t deck_size = []()
+			{
+				return [] <typename... Colors, typename... Ranks, size_t... Freqs> (std::tuple<card_frequency<Colors, Ranks, Freqs>...>&&)
+				{
+					return (Freqs + ...);
+				} (card_frequencies{});
+			}();
+		};
+
 		struct default_t
 		{
 			static constexpr auto num_players = 2;
@@ -166,16 +202,6 @@ namespace hanabi
 				card_frequency<color<4>, rank<0>, 3>, card_frequency<color<4>, rank<1>, 2>, card_frequency<color<4>, rank<2>, 2>,
 				card_frequency<color<4>, rank<3>, 2>, card_frequency<color<4>, rank<4>, 1>
 			>;
-
-			static constexpr size_t deck_size() 
-			{
-				return std::apply([] <typename... Colors, typename... Ranks, size_t... Freqs> (card_frequency<Colors, Ranks, Freqs>&&...)
-				{
-					return (Freqs + ... + 0);
-				}, card_frequencies{});
-			}
-
-
 		};
 	}
 
@@ -224,7 +250,8 @@ namespace hanabi
 	template <typename Configuration>
 	struct deck_state
 	{
-		std::array<card_state<Configuration>, Configuration::deck_size()> cards_;
+		using configuration_t = typename configuration::configuration_traits<Configuration>;
+		std::array<card_state<Configuration>, configuration_t::deck_size> cards_;
 	};
 
 	template <typename Configuration>
@@ -262,6 +289,12 @@ namespace hanabi
 		std::ostream& display_action(std::ostream& stream, const game_state<Configuration>& state) const
 		{
 			return a_.display_action(stream, state);
+		}
+
+		template <typename Configuration>
+		std::ostream& display_hidden_action(std::ostream& stream, const game_state<Configuration>& state) const
+		{
+			return a_.display_hidden_action(stream, state);
 		}
 	};
 
@@ -359,6 +392,13 @@ namespace hanabi
 		{
 			stream << "playing ";
 			state.deck_.cards_[card_].card_.display_card(stream) << (is_playable(state) ? " it worked!\n" : " it was a mistake.\n");
+			return stream;
+		}
+
+		template <typename Configuration>
+		std::ostream& display_hidden_action(std::ostream& stream, const game_state<Configuration>& state) const
+		{
+			stream << "playing card #" << card_ << '\n';
 			return stream;
 		}
 	};
@@ -509,6 +549,12 @@ namespace hanabi
 
 			return stream;
 		}
+
+		template <typename Configuration>
+		std::ostream& display_hidden_action(std::ostream& stream, const game_state<Configuration>& state) const
+		{
+			return display_action(stream, state);
+		}
 	};
 	
 	struct discard
@@ -563,6 +609,13 @@ namespace hanabi
 			state.deck_.cards_[card_].card_.display_card(stream) << '\n';
 			return stream;
 		}
+
+		template <typename Configuration>
+		std::ostream& display_hidden_action(std::ostream& stream, const game_state<Configuration>& state) const
+		{
+			stream << "discarding card #" << card_ << '\n';
+			return stream;
+		}
 	};
 
 	template <typename... Properties>
@@ -575,13 +628,219 @@ namespace hanabi
 		typename Configuration::template ranks<possible_hints> possible_ranks_{};
 	};
 
+	template <typename Configuration>
+	constexpr auto find_all_possible_actions(const game_state<Configuration>& state)
+	{
+		std::vector<typename Configuration::template actions<std::variant>> possible_actions;
+
+		possible_hint_options<Configuration> possible_hints_choices{};
+
+		for (int i = 0; i < state.deck_.cards_.size(); ++i)
+		{
+
+			const auto& card_in_deck = state.deck_.cards_[i];
+
+			if (auto card_in_hand = std::get_if<location::hand>(&card_in_deck.location_); card_in_hand)
+			{
+				if (card_in_hand->player_ == state.player_turn_)
+				{
+					possible_actions.emplace_back(action{ play{ i } });
+					possible_actions.emplace_back(action{ discard{ i } });
+				}
+				else
+				{
+					std::visit([&](const auto& card_color)
+						{
+							std::get<possibility<std::remove_cvref_t<decltype(card_color)>, false>>(possible_hints_choices.possible_colors_).possible_ = true;
+						}, card_in_deck.card_.color_);
+
+					std::visit([&](const auto& card_rank)
+						{
+							std::get<possibility<std::remove_cvref_t<decltype(card_rank)>, false>>(possible_hints_choices.possible_ranks_).possible_ = true;
+						}, card_in_deck.card_.rank_);
+				}
+			}
+		}
+
+		int opposite_player = (state.player_turn_ + 1) % 2;
+		std::apply([&] <typename... Colors> (possibility<Colors, false>... possible_colors)
+		{
+			[[maybe_unused]] void* consume;
+			[[maybe_unused]] auto dummy = ((consume = static_cast<void*> (((possible_colors.possible_) ? &possible_actions.emplace_back(hint<Colors> {opposite_player}) : nullptr))), ..., 0);
+		}, possible_hints_choices.possible_colors_);
+
+		std::apply([&] <typename... Ranks> (possibility<Ranks, false>... possible_ranks)
+		{
+			[[maybe_unused]] void* consume;
+			[[maybe_unused]] auto dummy = ((consume = static_cast<void*> (((possible_ranks.possible_) ? &possible_actions.emplace_back(hint<Ranks> {opposite_player}) : nullptr))), ..., 0);
+		}, possible_hints_choices.possible_ranks_);
+
+		return possible_actions;
+	}
+
+
+	namespace controller
+	{
+		template <typename Controller>
+		struct player_controller
+		{
+			Controller control_;
+
+			template <typename... TArgs>
+				player_controller(TArgs &&... args) : control_(std::in_place, std::forward<TArgs>(args)...)
+			{
+			}
+
+			template <typename GameState>
+			auto perform(const GameState& state)
+			{
+				return control_.perform(state);
+			}
+		};
+
+		template <typename Configuration>
+		struct human
+		{
+			std::mt19937& gen_;
+
+			human(std::in_place_t, std::mt19937& gen) : gen_(gen)
+			{
+
+			}
+
+			void print_player_know(const game_state<Configuration>& state, int player)
+			{
+				std::cout << "    \t| " << "rank      " << " | " << "color     " << '\n';
+
+				std::cout << "card\t| ";
+
+				std::apply([] <typename... Ranks> (Ranks &&...)
+				{
+					[[maybe_unused]] char dummy = ((std::cout << Ranks::display_rank() << ' ', 0), ...);
+				}, typename Configuration::template ranks<std::tuple>{});
+
+				std::cout << " | ";
+
+				std::apply([] <typename... Colors> (Colors &&...)
+				{
+					[[maybe_unused]] char dummy = ((std::cout << Colors::display_color() << Colors::display_name()[0] << termcolor::reset << ' ', 0), ...);
+				}, typename Configuration::template colors<std::tuple>{});
+
+				std::cout << '\n';
+
+				std::cout << "--------|------------|-----------\n";
+
+				for (int i = 0; i < state.deck_.cards_.size(); ++i)
+				{
+					const auto& card_in_deck = state.deck_.cards_[i];
+
+					if (const auto in_hand = std::get_if<location::hand>(&card_in_deck.location_); in_hand&& in_hand->player_ == player)
+					{
+						std::cout << '#' << i << ' ';
+
+						if (player != state.player_turn_)
+						{
+							card_in_deck.card_.display_card(std::cout);
+						}
+
+						std::cout << "\t| ";
+
+						std::apply([] <typename... Ts> (const possibility<Ts> &... p)
+						{
+							[[maybe_unused]] char dummy = ((std::cout << p.possible_ << ' ', 0), ...);
+						}, card_in_deck.knowledge_.hinted_ranks_);
+
+						std::cout << " | ";
+
+						std::apply([] <typename... Ts> (const possibility<Ts> &... p)
+						{
+							[[maybe_unused]] char dummy = ((std::cout << p.possible_ << ' ', 0), ...);
+						}, card_in_deck.knowledge_.hinted_colors_);
+
+						std::cout << '\n';
+					}
+				}
+			}
+			void print_know(const game_state<Configuration>& state)
+			{
+				std::cout << "your know:\n";
+				print_player_know(state, state.player_turn_);
+
+				std::cout << "partners know:\n";
+				print_player_know(state, (1 + state.player_turn_) % 2);
+			}
+
+			typename Configuration::template actions<std::variant> perform(const game_state<Configuration>& state)
+			{
+				auto possible_actions = find_all_possible_actions(state);
+				
+				print_know(state);
+
+				std::cout << "You may take one of " << possible_actions.size() << " actions.\n";
+
+				for (int i = 0; i < possible_actions.size(); ++i)
+				{
+					std::visit([&](const auto& action)
+						{
+							std::cout << '\t' << i << ". ";
+							action.display_hidden_action(std::cout, state);
+						}, possible_actions[i]);
+				}
+
+				std::uniform_int_distribution<size_t> dis(0, possible_actions.size() - 1);
+				auto choice = dis(gen_);
+				std::cout << "I will randomly play for you. " << "Your choice is " << choice << ".\n";
+			
+				return possible_actions[choice];
+			}
+
+		};
+
+		template <typename Configuration>
+		struct random_ai
+		{
+			std::mt19937& gen_;
+
+			random_ai(std::in_place_t, std::mt19937& gen) : gen_(gen)
+			{
+			}
+
+			typename Configuration::template actions<std::variant> perform(const game_state<Configuration>& state)
+			{
+				auto possible_actions = find_all_possible_actions(state);
+
+				std::uniform_int_distribution<size_t> dis(0, possible_actions.size() - 1);
+
+				return possible_actions[dis(gen_)];
+			}
+
+		};
+
+
+		template <typename Configuration, size_t... Ns, typename... Controllers>
+		auto choose_player_controller_action_impl(const game_state<Configuration>& state, std::index_sequence<Ns...>, std::tuple<player_controller<Controllers>...> player_controllers)
+		{
+			
+			std::optional<typename Configuration::template actions<std::variant>> action;
+
+			[[maybe_unused]] bool dummy = ((action == std::nullopt && (((state.player_turn_ == Ns) ? action = std::get<Ns>(player_controllers).perform(state) : action = std::nullopt), true)) && ...);
+
+			return action.value();
+		}
+
+		template <typename Configuration, typename... Controllers>
+		auto choose_player_controller_action(const game_state<Configuration>& state, std::tuple<player_controller<Controllers>...> player_controllers)
+		{
+			return choose_player_controller_action_impl(state, std::make_index_sequence<sizeof...(Controllers)>{}, player_controllers);
+		}
+	}
+
 	template<typename Configuration = hanabi::configuration::default_t>
 	class game
 	{
-		std::vector<std::pair<game_state<Configuration>, std::optional<typename Configuration::template actions<std::variant>>>> game_states_;
-		std::optional<int> final_score_;
-
 	public:
+
+		using configuration_t = typename configuration::configuration_traits<Configuration>;
 
 		template <typename Gen>
 		void init(Gen& gen)
@@ -592,9 +851,7 @@ namespace hanabi
 				{
 					return std::array{ card<Configuration>{Colors{}, Ranks{}}... };
 				}, std::tuple_cat(typename card_frequency<Colors, Ranks, Freqs>::tuple{}...));
-			}, typename Configuration::card_frequencies{});
-
-			static_assert(std::tuple_size_v<decltype(initial_card_list)> == Configuration::deck_size(), "Total number of cards in deck does not match frequency count.");
+			}, typename configuration_t::card_frequencies{});
 
 			std::shuffle(initial_card_list.begin(), initial_card_list.end(), gen);
 
@@ -609,13 +866,13 @@ namespace hanabi
 				});
 
 
-			init_state.num_available_hints_ = Configuration::max_num_hints;
+			init_state.num_available_hints_ = configuration_t::max_num_hints;
 			init_state.num_mistakes_ = 0;
 			init_state.player_turn_ = 0;
 
 			auto deal_out_hand_to_player = [player=0](const auto begin) mutable
 			{
-				return std::for_each_n(begin, Configuration::hand_size, [p = player++](auto& dealt_card)
+				return std::for_each_n(begin, configuration_t::hand_size, [p = player++](auto& dealt_card)
 					{
 						dealt_card.location_ = location::hand{ p };
 					});
@@ -628,7 +885,7 @@ namespace hanabi
 				card_info.age_ = age++;
 			});
 
-			init_state.next_card_to_draw_ = Configuration::hand_size * 2;
+			init_state.next_card_to_draw_ = configuration_t::hand_size * 2;
 			init_state.last_player_to_play_ = std::nullopt;
 			init_state.last_player_has_played_ = false;
 
@@ -637,7 +894,7 @@ namespace hanabi
 
 		static constexpr bool game_is_over(const game_state<Configuration>& state)
 		{
-			const bool too_many_mistakes = state.num_mistakes_ >= Configuration::max_num_mistakes;
+			const bool too_many_mistakes = state.num_mistakes_ >= configuration_t::max_num_mistakes;
 			const bool last_turn_has_happened = state.last_player_has_played_;
 			const bool no_more_possible_moves = false;
 
@@ -662,55 +919,6 @@ namespace hanabi
 
 				return ((highest_rank_this_color(colors)) + ...);
 			}, typename Configuration::template colors<std::tuple>{});
-		}
-
-		static constexpr auto find_all_possible_actions(const game_state<Configuration>& state)
-		{
-			std::vector<typename Configuration::template actions<std::variant>> possible_actions;
-
-			possible_hint_options<Configuration> possible_hints_choices{};
-
-			for (int i = 0; i < state.deck_.cards_.size(); ++i)
-			{
-
-				const auto& card_in_deck = state.deck_.cards_[i];
-
-				if (auto card_in_hand = std::get_if<location::hand>(&card_in_deck.location_); card_in_hand)
-				{
-					if (card_in_hand->player_ == state.player_turn_)
-					{
-						possible_actions.emplace_back(action{ play{ i } });
-						possible_actions.emplace_back(action{ discard{ i } });
-					}
-					else
-					{
-						std::visit([&](const auto& card_color)
-							{
-								std::get<possibility<std::remove_cvref_t<decltype(card_color)>, false>>(possible_hints_choices.possible_colors_).possible_ = true;
-							}, card_in_deck.card_.color_);
-
-						std::visit([&](const auto& card_rank)
-							{
-								std::get<possibility<std::remove_cvref_t<decltype(card_rank)>, false>>(possible_hints_choices.possible_ranks_).possible_ = true;
-							}, card_in_deck.card_.rank_);
-					}
-				}
-			}
-
-			int opposite_player = (state.player_turn_ + 1) % 2;
-			std::apply([&] <typename... Colors> (possibility<Colors, false>... possible_colors)
-			{
-				[[maybe_unused]] void* consume;
-				[[maybe_unused]] auto dummy = ((consume = static_cast<void*> (((possible_colors.possible_) ? &possible_actions.emplace_back( hint<Colors> {opposite_player} ) : nullptr))), ... , 0);
-			}, possible_hints_choices.possible_colors_);
-
-			std::apply([&] <typename... Ranks> (possibility<Ranks, false>... possible_ranks)
-			{
-				[[maybe_unused]] void* consume;
-				[[maybe_unused]] auto dummy = ((consume = static_cast<void*> (((possible_ranks.possible_) ? &possible_actions.emplace_back(hint<Ranks> {opposite_player}) : nullptr))), ..., 0);
-			}, possible_hints_choices.possible_ranks_);
-
-			return possible_actions;
 		}
 
 		static void display_hand_of(const game_state<Configuration>& state_to_display, int player)
@@ -754,6 +962,11 @@ namespace hanabi
 			}, typename Configuration::template colors<std::tuple>{});
 		}
 
+		static void display_mistakes_and_hints(const game_state<Configuration>& state_to_display)
+		{
+			std::cout << "num available hints: " << state_to_display.num_available_hints_ << ", num mistakes made: " << state_to_display.num_mistakes_ << '\n';
+		}
+
 		static void display_discard(const game_state<Configuration>& state_to_display)
 		{
 
@@ -765,6 +978,7 @@ namespace hanabi
 			std::cout << "player " << state_to_display.player_turn_ << "s turn\n";
 			display_hand_of(state_to_display, (state_to_display.player_turn_ + 1) % 2);
 			display_played_cards(state_to_display);
+			display_mistakes_and_hints(state_to_display);
 			display_discard(state_to_display);
 
 		}
@@ -779,25 +993,24 @@ namespace hanabi
 				std::cout << "\n\n";
 			}
 
+			std::tuple<controller::player_controller<controller::random_ai<Configuration>>, controller::player_controller<controller::human<Configuration>>> player_controllers = { gen, gen };
+
 			while (!game_is_over(game_states_.back().first))
 			{
 				const auto& state = game_states_.back().first;
 
 				if (display) display_state(state);
 
-				auto possible_actions = find_all_possible_actions(state);
-
-				std::uniform_int_distribution<size_t> dis (0, possible_actions.size() - 1);
+				auto pc_action = controller::choose_player_controller_action(state, player_controllers);
 
 				std::visit([&](const auto& action)
-					{
-						if (display) action.display_action(std::cout, state);
-						game_states_.emplace_back(action.perform(state), action);
-					}, possible_actions[dis(gen)]);
-
-				
+				{
+					if (display) action.display_action(std::cout, state);
+					game_states_.emplace_back(action.perform(state), action);
+				}, pc_action);
 			}
 
+			if (display) display_state(game_states_.back().first);
 			final_score_ = score_of(game_states_.back ().first);
 		}
 
@@ -805,26 +1018,12 @@ namespace hanabi
 		{
 			return final_score_;
 		}
+	private:
+
+		std::vector<std::pair<game_state<Configuration>, std::optional<typename configuration_t::template actions<std::variant>>>> game_states_;
+		std::optional<int> final_score_;
 	};
 }
-
-
-//Test explicit instantiations
-
-//Play action
-template bool hanabi::play::is_playable<hanabi::configuration::default_t>(const hanabi::game_state<hanabi::configuration::default_t>&) const;
-template bool hanabi::play::validate<hanabi::configuration::default_t>(const hanabi::game_state<hanabi::configuration::default_t>&) const;
-template hanabi::game_state<hanabi::configuration::default_t> hanabi::play::perform<hanabi::configuration::default_t>(const hanabi::game_state<hanabi::configuration::default_t>&) const;
-
-//Discard action
-template bool hanabi::discard::validate<hanabi::configuration::default_t>(const hanabi::game_state<hanabi::configuration::default_t>&) const;
-template hanabi::game_state<hanabi::configuration::default_t> hanabi::discard::perform<hanabi::configuration::default_t>(const hanabi::game_state<hanabi::configuration::default_t>&) const;
-
-//Hint action
-template bool hanabi::hint<hanabi::color<0>>::validate<hanabi::configuration::default_t>(const hanabi::game_state<hanabi::configuration::default_t>&) const;
-template hanabi::game_state<hanabi::configuration::default_t> hanabi::hint<hanabi::color<0>>::perform<hanabi::configuration::default_t>(const hanabi::game_state<hanabi::configuration::default_t>&) const;
-template bool hanabi::hint<hanabi::rank<0>>::validate<hanabi::configuration::default_t>(const hanabi::game_state<hanabi::configuration::default_t>&) const;
-template hanabi::game_state<hanabi::configuration::default_t> hanabi::hint<hanabi::rank<0>>::perform<hanabi::configuration::default_t>(const hanabi::game_state<hanabi::configuration::default_t>&) const;
 
 int main()
 {
@@ -832,24 +1031,23 @@ int main()
 	
 	std::random_device rd;
 
-	std::optional<std::random_device::result_type> default_seed = 3517219547; //15 point game
+	std::random_device::result_type seed = 3517219547; //15 point game
 
-	std::random_device::result_type seed;
 	auto best_score_so_far = 0;
 
-	while (best_score_so_far < 15)
-	{
-		seed = default_seed.value_or(rd());
-		std::mt19937 gen(seed);
+	//while (best_score_so_far < 15)
+	//{
+	//	seed = default_seed.value_or(rd());
+	//	std::mt19937 gen(seed);
 
-		hanabi_game game;
+	//	hanabi_game game;
 
-		game.init(gen);
-		game.run(gen, false);
+	//	game.init(gen);
+	//	game.run(gen, false);
 
-		best_score_so_far = std::max(game.final_score().value_or(0), best_score_so_far);
-		std::cout << "score: " << game.final_score().value() << '\n';
-	}
+	//	best_score_so_far = std::max(game.final_score().value_or(0), best_score_so_far);
+	//	std::cout << "score: " << game.final_score().value() << '\n';
+	//}
 
 	std::mt19937 best_gen(seed);
 	hanabi_game game;
